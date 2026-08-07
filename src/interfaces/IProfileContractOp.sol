@@ -23,7 +23,7 @@ interface IProfileContractOp {
 
     event ProfileSet(address indexed profileOwner, ProfileTypes.Profile profile);
 
-    event ProfileUpdated(address indexed profileOwner, string[] updatedFields, ProfileTypes.Profile profile);
+    event ProfileUpdated(address indexed profileOwner, string[] updatedFields);
 
     event ProfileCleared(address indexed profileOwner);
 

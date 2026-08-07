@@ -73,11 +73,11 @@ contract ProfileContractOp is IProfileContractOp, ValidationHelper, CompareHelpe
             mstore(updatedFields, changedCount)
         }
 
-        emit ProfileUpdated(msg.sender, updatedFields, profile);
+        emit ProfileUpdated(msg.sender, updatedFields);
     }
 
     function getProfile(address profileOwner) external view returns (ProfileTypes.Profile memory) {
-        if (!profileOwners.contains(profileOwner)) {
+        if (!profiles[profileOwner].exists) {
             revert ProfileNotFound();
         }
         return profiles[profileOwner];
