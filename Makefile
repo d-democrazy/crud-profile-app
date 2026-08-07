@@ -3,9 +3,9 @@
 include .env
 export
 
-CONTRACT_NAME := ProfileContract
-SCRIPT_NAME   := DeployProfileContract.s.sol
-SCRIPT_PATH   := script/$(SCRIPT_NAME):DeployProfileContract
+CONTRACT_NAME := ProfileContractOp
+SCRIPT_NAME   := DeployProfileContractOp.s.sol
+SCRIPT_PATH   := script/$(SCRIPT_NAME):DeployProfileContractOp
 
 .PHONY: deploy verify
 
