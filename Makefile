@@ -29,6 +29,6 @@ verify:
 	@echo "Broadcast file: $(BROADCAST_FILE)"
 	@echo "Verifying $(CONTRACT_NAME) at $(CONTRACT)"
 	forge verify-contract $(CONTRACT) $(CONTRACT_NAME) \
-		--verifier-url $(TESTNET2_API_URL) \
+		--verifier-url $(TESTNET2_API_ENDPOINT) \
 		--api-key $(CORESCAN_TESTNET2_API_KEY) \
 		--watch
