@@ -4,28 +4,29 @@ Consolidated specs, ABI, data flow, and implementation walkthroughs for `Profile
 
 ## Table of Contents
 
-1. [ProfileContract — Data Flow Spec](#profilecontract--data-flow-spec)
-   - [Purpose](#purpose)
-   - [Part 1 — General Solidity data management concepts](#part-1--general-solidity-data-management-concepts)
-   - [Part 2 — This contract's state variables](#part-2--this-contracts-state-variables)
-   - [Part 3 — CRUD-by-variable matrix](#part-3--crud-by-variable-matrix)
-2. [setProfile()](#setprofile)
-   - [setProfile() — Spec + ABI](#setprofile--spec--abi)
-   - [setProfile() — Implementation](#setprofile--implementation)
-3. [updateProfile()](#updateprofile)
-   - [updateProfile() — Spec + ABI](#updateprofile--spec--abi)
-   - [updateProfile() — Implementation](#updateprofile--implementation)
-4. [getProfile()](#getprofile)
-   - [getProfile() — Spec + ABI](#getprofile--spec--abi)
-   - [getProfile() — Implementation](#getprofile--implementation)
-5. [getAllProfile()](#getallprofile)
-   - [getAllProfile() — Spec + ABI](#getallprofile--spec--abi)
-   - [getAllProfile() — Implementation](#getallprofile--implementation)
-6. [deleteProfile()](#deleteprofile)
-   - [deleteProfile() — Spec + ABI](#deleteprofile--spec--abi)
-   - [deleteProfile() — Implementation](#deleteprofile--implementation)
+1. [Phase 1: Pre-optimized Contract Design](#phase-1-pre-optimized-contract-design)
+    - [ProfileContract — Data Flow Spec](#profilecontract--data-flow-spec)
+    - [Part 1 — General Solidity data management concepts](#part-1--general-solidity-data-management-concepts)
+    - [Part 2 — This contract's state variables](#part-2--this-contracts-state-variables)
+    - [Part 3 — CRUD-by-variable matrix](#part-3--crud-by-variable-matrix)
+    - [setProfile()](#setprofile)
+    - [updateProfile()](#updateprofile)
+    - [getProfile()](#getprofile)
+    - [getAllProfile()](#getallprofile)
+    - [deleteProfile()](#deleteprofile)
+2. [Phase 2: Optimized Contract Design (ProfileContractOp)](#phase-2-optimized-contract-design-profilecontractop)
+    - [Why Optimize?](#why-optimize)
+    - [Modularization (Interfaces, Libraries, Helpers)](#modularization-interfaces-libraries-helpers)
+    - [OpenZeppelin's EnumerableSet](#openzeppelins-enumerableset)
+    - [Custom Errors vs Require Strings](#custom-errors-vs-require-strings)
+    - [Data Structure Improvements](#data-structure-improvements)
+3. [Phase 3: DevOps and Deployment Flow](#phase-3-devops-and-deployment-flow)
+    - [Security Best Practice (Keystore)](#security-best-practice-keystore)
+    - [Deployment Scripts (Forge)](#deployment-scripts-forge)
 
 ---
+
+## Phase 1: Pre-optimized Contract Design
 
 ## ProfileContract — Data Flow Spec
 
@@ -80,7 +81,7 @@ struct Profile {
     string name;
     string profession;
     string bio;
-    uint16 experience;
+    uint8 experience;
     bool exists;
 }
 ```
@@ -173,7 +174,7 @@ Create-only setter. Registers a new profile for the caller (`msg.sender`). Does 
 | Question            | Decision                                                                                                  |
 | ------------------- | --------------------------------------------------------------------------------------------------------- |
 | **Key**             | Implicit — `msg.sender` only. No address parameter. Caller can only ever create their own profile.        |
-| **Fields**          | `name`, `profession`, `bio` (dynamic `string`, each length-capped) and `experience` (`uint16`, uncapped). |
+| **Fields**          | `name`, `profession`, `bio` (dynamic `string`, each length-capped) and `experience` (`uint8`, uncapped). |
 | **Write semantics** | Create-only. Calling this again after registration must revert, not overwrite.                            |
 | **Output**          | None. Confirmation is via the `ProfileSet` event only — no return value.                                  |
 | **Guards**          | Revert if `profiles[msg.sender].exists == true`. Revert if any string field exceeds its length cap.       |
@@ -182,14 +183,14 @@ Create-only setter. Registers a new profile for the caller (`msg.sender`). Does 
 
 | Field         | Max length     |
 | ------------- | -------------- |
-| `_name`       | 50 characters  |
-| `_profession` | 60 characters  |
+| `_name`       | 100 characters  |
+| `_profession` | 100 characters  |
 | `_bio`        | 500 characters |
 
 #### Function signature
 
 ```
-setProfile(string,string,string,uint16)
+setProfile(string,string,string,uint8)
 ```
 
 **State mutability:** `nonpayable`
@@ -198,10 +199,10 @@ setProfile(string,string,string,uint16)
 
 |        | Position | Name          | Type     | Notes                                 |
 | ------ | -------- | ------------- | -------- | ------------------------------------- |
-| Input  | 0        | `_name`       | `string` | dynamic, ≤ 50 chars                   |
-| Input  | 1        | `_profession` | `string` | dynamic, ≤ 60 chars                   |
+| Input  | 0        | `_name`       | `string` | dynamic, ≤ 100 chars                   |
+| Input  | 1        | `_profession` | `string` | dynamic, ≤ 100 chars                   |
 | Input  | 2        | `_bio`        | `string` | dynamic, ≤ 500 chars                  |
-| Input  | 3        | `_experience` | `uint16` | fixed-size, uncapped, max value 65535 |
+| Input  | 3        | `_experience` | `uint8` | fixed-size, uncapped, max value 255 |
 | Output | —        | _(none)_      | —        | no return value                       |
 
 **Implicit key:** `msg.sender` — not part of calldata args, but the storage key everything is written under.
@@ -209,13 +210,13 @@ setProfile(string,string,string,uint16)
 #### Guards (require conditions)
 
 1. `require(!profiles[msg.sender].exists, "Already registered, use update")`
-2. `require(bytes(_name).length <= 50, "Name too long")`
-3. `require(bytes(_profession).length <= 60, "Profession too long")`
+2. `require(bytes(_name).length <= 100, "Name too long")`
+3. `require(bytes(_profession).length <= 100, "Profession too long")`
 4. `require(bytes(_bio).length <= 500, "Bio too long")`
 
 #### Event emitted
 
-`ProfileSet(address indexed user, string name)`
+`ProfileSet(address indexed profileOwner, Profile profile)`
 
 #### JSON ABI
 
@@ -230,7 +231,7 @@ setProfile(string,string,string,uint16)
     { "name": "_name", "type": "string" },
     { "name": "_profession", "type": "string" },
     { "name": "_bio", "type": "string" },
-    { "name": "_experience", "type": "uint16" }
+    { "name": "_experience", "type": "uint8" }
   ],
   "outputs": []
 }
@@ -317,10 +318,10 @@ function setProfile(
     string calldata _name,
     string calldata _profession,
     string calldata _bio,
-    uint16 _experience
+    uint8 _experience
 ) external {
-    require(bytes(_name).length <= 50, "Name too long");
-    require(bytes(_profession).length <= 60, "Profession too long");
+    require(bytes(_name).length <= 100, "Name too long");
+    require(bytes(_profession).length <= 100, "Profession too long");
     require(bytes(_bio).length <= 500, "Bio too long");
 
     require(!profiles[msg.sender].exists, "Already registered, use update");
@@ -355,7 +356,7 @@ Partial-patch setter. Updates one or more fields of the caller's (`msg.sender`) 
 | Question            | Decision                                                                                                                                                             |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Key**             | Implicit — `msg.sender` only. No address parameter. Caller can only ever update their own profile.                                                                   |
-| **Fields**          | `name`, `profession`, `bio` (dynamic `string`, each length-capped, same caps as `setProfile`) and `experience` (`uint16`, uncapped).                                 |
+| **Fields**          | `name`, `profession`, `bio` (dynamic `string`, each length-capped, same caps as `setProfile`) and `experience` (`uint8`, uncapped).                                 |
 | **Write semantics** | Partial patch — caller supplies only the fields they want changed.                                                                                                   |
 | **Output**          | None. Confirmation is via the `ProfileUpdated` event, which reports which field(s) were patched.                                                                     |
 | **Guards**          | Revert if `profiles[msg.sender].exists == false`. Revert if any provided string field exceeds its length cap. Revert if no field was actually provided (no-op call). |
@@ -367,7 +368,7 @@ Partial-patch setter. Updates one or more fields of the caller's (`msg.sender`) 
 | `_name`       | `string` | empty string (`""`)              |
 | `_profession` | `string` | empty string (`""`)              |
 | `_bio`        | `string` | empty string (`""`)              |
-| `_experience` | `uint16` | `0`                              |
+| `_experience` | `uint8` | `0`                              |
 
 **Known limitation:** this convention means a caller cannot intentionally clear a string field to empty, or set `experience` to `0` — both values are reserved as "skip this field." Worth flagging if that's ever a real use case; would need a different mechanism (e.g. a bitmask or per-field bool flags) to support it.
 
@@ -375,14 +376,14 @@ Partial-patch setter. Updates one or more fields of the caller's (`msg.sender`) 
 
 | Field         | Max length     |
 | ------------- | -------------- |
-| `_name`       | 50 characters  |
-| `_profession` | 60 characters  |
+| `_name`       | 100 characters  |
+| `_profession` | 100 characters  |
 | `_bio`        | 500 characters |
 
 #### Function signature
 
 ```
-updateProfile(string,string,string,uint16)
+updateProfile(string,string,string,uint8)
 ```
 
 **State mutability:** `nonpayable`
@@ -391,10 +392,10 @@ updateProfile(string,string,string,uint16)
 
 |        | Position | Name          | Type     | Notes                             |
 | ------ | -------- | ------------- | -------- | --------------------------------- |
-| Input  | 0        | `_name`       | `string` | dynamic, ≤ 50 chars, `""` = skip  |
-| Input  | 1        | `_profession` | `string` | dynamic, ≤ 60 chars, `""` = skip  |
+| Input  | 0        | `_name`       | `string` | dynamic, ≤ 100 chars, `""` = skip  |
+| Input  | 1        | `_profession` | `string` | dynamic, ≤ 100 chars, `""` = skip  |
 | Input  | 2        | `_bio`        | `string` | dynamic, ≤ 500 chars, `""` = skip |
-| Input  | 3        | `_experience` | `uint16` | fixed-size, uncapped, `0` = skip  |
+| Input  | 3        | `_experience` | `uint8` | fixed-size, uncapped, `0` = skip  |
 | Output | —        | _(none)_      | —        | no return value                   |
 
 **Implicit key:** `msg.sender` — the storage entry being patched.
@@ -402,14 +403,14 @@ updateProfile(string,string,string,uint16)
 #### Guards (require conditions)
 
 1. `require(profiles[msg.sender].exists, "No profile to update")`
-2. `require(bytes(_name).length <= 50, "Name too long")` — only checked if `_name != ""`
-3. `require(bytes(_profession).length <= 60, "Profession too long")` — only checked if `_profession != ""`
+2. `require(bytes(_name).length <= 100, "Name too long")` — only checked if `_name != ""`
+3. `require(bytes(_profession).length <= 100, "Profession too long")` — only checked if `_profession != ""`
 4. `require(bytes(_bio).length <= 500, "Bio too long")` — only checked if `_bio != ""`
 5. `require(bytes(_name).length > 0 || bytes(_profession).length > 0 || bytes(_bio).length > 0 || _experience > 0, "No changes provided")`
 
 #### Event emitted
 
-`ProfileUpdated(address indexed user, string[] fieldsUpdated)`
+`ProfileUpdated(address indexed profileOwner, string[] updatedFields)`
 
 Emits the list of field names that were actually patched in this call (e.g. `["name", "bio"]` if only those two were provided), so off-chain listeners know exactly what changed without diffing the whole profile.
 
@@ -426,7 +427,7 @@ Emits the list of field names that were actually patched in this call (e.g. `["n
     { "name": "_name", "type": "string" },
     { "name": "_profession", "type": "string" },
     { "name": "_bio", "type": "string" },
-    { "name": "_experience", "type": "uint16" }
+    { "name": "_experience", "type": "uint8" }
   ],
   "outputs": []
 }
@@ -523,7 +524,7 @@ function updateProfile(
     string calldata _name,
     string calldata _profession,
     string calldata _bio,
-    uint16 _experience
+    uint8 _experience
 ) external {
     require(profiles[msg.sender].exists, "No profile to update");
 
@@ -538,11 +539,11 @@ function updateProfile(
     );
 
     if (nameProvided) {
-        require(bytes(_name).length <= 50, "Name too long");
+        require(bytes(_name).length <= 100, "Name too long");
         profiles[msg.sender].name = _name;
     }
     if (professionProvided) {
-        require(bytes(_profession).length <= 60, "Profession too long");
+        require(bytes(_profession).length <= 100, "Profession too long");
         profiles[msg.sender].profession = _profession;
     }
     if (bioProvided) {
@@ -608,7 +609,7 @@ getProfile(address)
 | Output | 0        | `name`       | `string`  |                                                               |
 | Output | 1        | `profession` | `string`  |                                                               |
 | Output | 2        | `bio`        | `string`  |                                                               |
-| Output | 3        | `experience` | `uint16`  |                                                               |
+| Output | 3        | `experience` | `uint8`  |                                                               |
 | Output | 4        | `exists`     | `bool`    | always `true` in a successful return — call reverts otherwise |
 
 Output is a single `Profile` struct, ABI-encoded as a tuple of the five fields above, in that order.
@@ -642,7 +643,7 @@ None. `view` functions cannot emit events (they don't create a transaction).
         { "name": "name", "type": "string" },
         { "name": "profession", "type": "string" },
         { "name": "bio", "type": "string" },
-        { "name": "experience", "type": "uint16" },
+        { "name": "experience", "type": "uint8" },
         { "name": "exists", "type": "bool" }
       ]
     }
@@ -773,7 +774,7 @@ None. `view` functions cannot emit events.
         { "name": "name", "type": "string" },
         { "name": "profession", "type": "string" },
         { "name": "bio", "type": "string" },
-        { "name": "experience", "type": "uint16" },
+        { "name": "experience", "type": "uint8" },
         { "name": "exists", "type": "bool" }
       ]
     }
@@ -1043,4 +1044,616 @@ function deleteProfile() external returns (bool) {
 }
 ```
 
+## Phase 2: Optimized Contract Design (ProfileContractOp)
+
+### Folder Structure and Architecture
+When transitioning from the pre-optimized to the optimized contract, the codebase was heavily refactored into a modular architecture to adhere to separation of concerns and DRY (Don't Repeat Yourself) principles.
+
+```
+src/
+├── helpers/
+│   ├── CompareHelper.sol
+│   └── ValidationHelper.sol
+├── interfaces/
+│   └── IProfileContractOp.sol
+├── libraries/
+│   └── ProfileTypes.sol
+├── ProfileContract.sol (Phase 1)
+└── ProfileContractOp.sol (Phase 2)
+```
+
+**Why architect it this way?**
+1. **`interfaces/`**: By extracting the ABI, Custom Errors, and Events into `IProfileContractOp.sol`, we create a clean boundary. Other contracts and front-ends can easily import just the interface without dragging in the entire logic bytecode.
+2. **`libraries/`**: The `ProfileTypes.sol` library centralizes shared definitions (like `Profile` and `ProfileInput` structs, and the `Field` enum). This eliminates redundancy and keeps the main contract file focused on state and behavior rather than data structure definitions.
+3. **`helpers/`**: Abstract contracts like `ValidationHelper.sol` and `CompareHelper.sol` house reusable internal and pure logic (e.g., string length validation and keccak256 comparison). By abstracting these, `ProfileContractOp`'s main functions become drastically smaller and easier to read.
+4. **`ProfileContractOp.sol`**: The main contract now acts simply as a coordinator—orchestrating storage reads/writes while leaning on the helpers and libraries for processing.
+
 ---
+
+### Deep Dive: Libraries, Interfaces, and Helpers
+
+To mirror the function-by-function pedagogical breakdown, here is the exact structural rationale for each abstracted module.
+
+#### 1. Libraries (`ProfileTypes.sol`)
+
+**What it is**
+A Solidity `library` used solely as a central repository for shared data types. It contains the `Field` enum, `Profile` struct, and the `ProfileInput` struct.
+
+**Why it's needed**
+In Phase 1, `struct Profile` was defined inside the contract. If a frontend or another smart contract wanted to interact with `ProfileContract`, they would have to import the entire contract just to know what a `Profile` looks like. By extracting this into `ProfileTypes.sol`, any file (interfaces, helpers, main contract, deployment scripts) can import just the structs without inheriting any logic or storage overhead. Furthermore, bundling inputs into `ProfileInput` avoids "Stack too deep" errors when passing numerous strings to `setProfile`.
+
+**How it works (Implementation)**
+```solidity
+library ProfileTypes {
+    enum Field { Name, Profession, Bio, Experience }
+
+    struct Profile {
+        string name;
+        string profession;
+        string bio;
+        uint8 experience;
+        bool exists;
+    }
+
+    struct ProfileInput {
+        string name;
+        string profession;
+        string bio;
+        uint8 experience;
+    }
+}
+```
+*Usage in main contract*: `import {ProfileTypes} from "./libraries/ProfileTypes.sol";` allows `ProfileTypes.Profile storage profile = profiles[msg.sender];`.
+
+#### 2. Interfaces (`IProfileContractOp.sol`)
+
+**What it is**
+An `interface` defines the external API of a smart contract without implementing any of the logic. It dictates exactly which functions, custom errors, and events the implementing contract *must* have.
+
+**Why it's needed**
+- **Abstraction & Decoupling**: If you build a dapp that interacts with the Profile App, your dapp's smart contracts only need to know the *interface* of the profile contract, not its implementation.
+- **Custom Errors**: Defining `error ProfileAlreadyExists();` inside the interface ensures that anyone interacting with the contract knows exactly which errors to decode if a transaction reverts. 
+- **Gas Efficiency**: Custom errors in an interface are strictly cheaper than `require(..., "String")` because they don't store long strings in the deployed bytecode.
+
+**How it works (Implementation)**
+```solidity
+interface IProfileContractOp {
+    error ProfileAlreadyExists();
+    error ProfileNotFound();
+    error NoChanges();
+
+    event ProfileSet(address indexed profileOwner, ProfileTypes.Profile profile);
+    event ProfileUpdated(address indexed profileOwner, string[] updatedFields, ProfileTypes.Profile profile);
+    event ProfileCleared(address indexed profileOwner);
+
+    function setProfile(ProfileTypes.ProfileInput calldata input) external;
+    function updateProfile(ProfileTypes.ProfileInput calldata input) external;
+    function deleteProfile() external returns (bool);
+    function getProfile(address profileOwner) external view returns (ProfileTypes.Profile memory);
+    function getAllProfiles() external view returns (address[] memory, ProfileTypes.Profile[] memory);
+}
+```
+*Usage in main contract*: `contract ProfileContractOp is IProfileContractOp { ... }`. The compiler forces `ProfileContractOp` to implement all these functions exactly as defined.
+
+#### 3. Helpers (`ValidationHelper.sol` & `CompareHelper.sol`)
+
+**What they are**
+Abstract contracts that house internal, pure utility functions. 
+
+**Why they are needed**
+In Phase 1, `setProfile` and `updateProfile` were cluttered with repetitive `require(bytes(_name).length <= 100)` statements. Every string field needed identical validation logic. Furthermore, `updateProfile` needed complex `keccak256` logic to check if a string had changed before issuing an `SSTORE`. 
+By abstracting these into `ValidationHelper` and `CompareHelper`:
+- The main contract becomes drastically shorter and strictly focused on state manipulation.
+- We adhere to DRY principles. If the logic for validating a string needs to change, it is changed in one place.
+
+**How they work (Implementation)**
+
+**ValidationHelper.sol**
+```solidity
+abstract contract ValidationHelper {
+    error RequiredField(ProfileTypes.Field field);
+    error MaxLengthExceeded(ProfileTypes.Field field, uint256 maxLength);
+
+    function _validateRequiredString(string calldata value, ProfileTypes.Field field, uint256 maxLength) internal pure {
+        uint256 length = bytes(value).length;
+        if (length == 0) revert RequiredField(field);
+        if (length > maxLength) revert MaxLengthExceeded(field, maxLength);
+    }
+}
+```
+*Usage*: `_validateRequiredString(input.name, ProfileTypes.Field.Name, 100);` replaces 3 lines of messy requires.
+
+**CompareHelper.sol**
+```solidity
+abstract contract CompareHelper {
+    function _isDifferent(string calldata input, string storage current) internal pure returns (bool) {
+        return keccak256(bytes(input)) != keccak256(bytes(current));
+    }
+}
+```
+*Usage*: `if (_isDifferent(input.name, profile.name)) { profile.name = input.name; }` allows us to securely and cheaply verify string mutations before burning gas on storage writes.
+
+
+---
+
+### ProfileContractOp — Data Flow Spec
+
+#### Part 1 — Optimization Concepts
+
+**Custom Errors over Require Strings**
+Instead of `require(..., "String")`, the contract uses custom errors like `revert ProfileAlreadyExists()`. Custom errors are ABI-encoded (essentially a 4-byte selector plus any arguments), making them significantly cheaper to deploy and execute on failure than storing and reverting with dynamic string messages.
+
+**ProfileInput Struct**
+Functions like `setProfile` and `updateProfile` previously took 4 separate parameters. This was refactored into a single `ProfileTypes.ProfileInput calldata input`. Passing a single struct drastically reduces "Stack too deep" issues and creates a cleaner function signature.
+
+#### Part 2 — This contract's state variables
+
+**`profiles`**
+```solidity
+mapping(address => ProfileTypes.Profile) private profiles;
+```
+Same as Phase 1. Maps an address to its `Profile` struct.
+
+**`profileOwners` (EnumerableSet)**
+```solidity
+EnumerableSet.AddressSet private profileOwners;
+```
+This is a massive optimization. We removed both the manual `address[] profileOwners` array and the `mapping(address => uint256) ownerIndex`. OpenZeppelin's `EnumerableSet` handles the underlying array and index mapping implicitly, offering gas-efficient O(1) `add()`, `remove()`, and `contains()` operations.
+
+#### Part 3 — CRUD-by-variable matrix (Optimized)
+
+| Function          | `profiles`                          | `profileOwners` (EnumerableSet)      |
+| ----------------- | ----------------------------------- | ------------------------------------ |
+| `setProfile()`    | **C**                               | **C** (add)                          |
+| `updateProfile()` | **U** (patched fields only)         | —                                    |
+| `getProfile()`    | **R**                               | **R** (contains guard)               |
+| `getAllProfiles()`| **R**                               | **R** (values export)                |
+| `deleteProfile()` | **D**                               | **D** (remove)                       |
+
+---
+
+### setProfile() (Optimized)
+
+#### Spec + ABI
+Registers a new profile for the caller, heavily relying on the `ValidationHelper` for string assertions and `EnumerableSet` for safe tracking.
+
+**I/O table**
+| Input | `input` | `ProfileTypes.ProfileInput` | struct containing name, profession, bio, experience |
+
+**Guards**
+1. `if (profiles[msg.sender].exists) revert ProfileAlreadyExists();`
+2. Handled by `ValidationHelper`: max lengths enforced (name: 100, profession: 50, bio: 500). Wait, the code says profession 50. We respect the optimized code limits exactly.
+3. `if (input.experience == 0) revert RequiredField(...)`
+
+#### Implementation
+1. **Existence Guard**: Checks if profile already exists.
+2. **Validate Strings**: Calls `_validateRequiredString` for name, profession, and bio.
+3. **Validate Experience**: Ensures it's non-zero.
+4. **State Update**: Calls `profileOwners.add(msg.sender)` (O(1) insertion) and assigns the `Profile` struct to `profiles[msg.sender]`.
+5. **Emit Event**: `ProfileSet`.
+
+**Solidity implementation**
+```solidity
+function setProfile(ProfileTypes.ProfileInput calldata input) external {
+    if (profiles[msg.sender].exists) {
+        revert ProfileAlreadyExists();
+    }
+
+    _validateRequiredString(input.name, ProfileTypes.Field.Name, 100);
+    _validateRequiredString(input.profession, ProfileTypes.Field.Profession, 50);
+    _validateRequiredString(input.bio, ProfileTypes.Field.Bio, 500);
+    if (input.experience == 0) revert RequiredField(ProfileTypes.Field.Experience);
+
+    profileOwners.add(msg.sender);
+    profiles[msg.sender] = ProfileTypes.Profile({
+        name: input.name, profession: input.profession, bio: input.bio, experience: input.experience, exists: true
+    });
+
+    emit ProfileSet(msg.sender, profiles[msg.sender]);
+}
+```
+
+---
+
+### updateProfile() (Optimized)
+
+#### Spec + ABI
+Updates an existing profile. Significantly optimized to only perform `SSTORE` (storage writes) if the value genuinely changed, using `keccak256` comparisons.
+
+#### Implementation
+1. **Existence Guard**: Reverts with `ProfileNotFound` if not registered.
+2. **Conditional Updates**: For each field (name, profession, bio):
+   - Check if provided `bytes(input.field).length != 0`.
+   - Validate length via `_validateRequiredString`.
+   - Compare new vs old string using `_isDifferent(input.field, profile.field)` from `CompareHelper`.
+   - If different, update state and track in `updatedFields`.
+3. **Change Tracking via Assembly**: Because memory arrays are fixed-length, we allocate `string[] memory updatedFields = new string[](4);`. After checking all 4 fields, we might have fewer than 4 changes (e.g., `changedCount = 2`). Instead of leaving empty slots, inline assembly is used: `assembly { mstore(updatedFields, changedCount) }` to dynamically shrink the array's length header in memory before emitting it.
+4. **No Changes Guard**: `if (changedCount == 0) revert NoChanges();`
+
+**Solidity implementation**
+```solidity
+function updateProfile(ProfileTypes.ProfileInput calldata input) external {
+    ProfileTypes.Profile storage profile = profiles[msg.sender];
+    if (!profile.exists) {
+        revert ProfileNotFound();
+    }
+
+    string[] memory updatedFields = new string[](4);
+    uint8 changedCount;
+
+    if (bytes(input.name).length != 0) {
+        _validateRequiredString(input.name, ProfileTypes.Field.Name, 100);
+        if (_isDifferent(input.name, profile.name)) {
+            profile.name = input.name;
+            updatedFields[changedCount++] = "name";
+        }
+    }
+    // ... same for profession, bio, experience ...
+
+    if (changedCount == 0) revert NoChanges();
+
+    // Dynamically shrink the memory array length before emitting
+    assembly {
+        mstore(updatedFields, changedCount)
+    }
+
+    emit ProfileUpdated(msg.sender, updatedFields, profile);
+}
+```
+
+---
+
+### getProfile() (Optimized)
+
+#### Spec + ABI
+Reads a single profile. Unlike Phase 1 which checked `profiles[_user].exists`, the optimized contract uses the EnumerableSet.
+
+#### Implementation
+```solidity
+function getProfile(address profileOwner) external view returns (ProfileTypes.Profile memory) {
+    if (!profileOwners.contains(profileOwner)) {
+        revert ProfileNotFound();
+    }
+    return profiles[profileOwner];
+}
+```
+
+---
+
+### getAllProfiles() (Optimized)
+
+#### Spec + ABI
+Returns parallel arrays of addresses and their respective profiles. Note the plural name `getAllProfiles` compared to Phase 1's `getAllProfile`.
+
+#### Implementation
+The `EnumerableSet` exposes a `.values()` function that conveniently exports the entire underlying address array into memory in one shot. We then allocate the `Profile[]` array and loop through.
+
+```solidity
+function getAllProfiles() external view returns (address[] memory, ProfileTypes.Profile[] memory) {
+    uint256 length = profileOwners.length();
+    address[] memory owners = profileOwners.values();
+    ProfileTypes.Profile[] memory allProfiles = new ProfileTypes.Profile[](length);
+
+    for (uint256 i; i < length; i++) {
+        allProfiles[i] = profiles[owners[i]];
+    }
+    return (owners, allProfiles);
+}
+```
+
+---
+
+### deleteProfile() (Optimized)
+
+#### Spec + ABI
+Clears the user's profile and removes them from the tracking list.
+
+#### Implementation
+The massive manual swap-and-pop logic from Phase 1 has been completely eliminated. `EnumerableSet` handles all of the O(1) shifting under the hood via `profileOwners.remove(msg.sender)`.
+
+```solidity
+function deleteProfile() external returns (bool) {
+    if (!profiles[msg.sender].exists) {
+        revert ProfileNotFound();
+    }
+    delete profiles[msg.sender];
+    profileOwners.remove(msg.sender);
+
+    emit ProfileCleared(msg.sender);
+    return true;
+}
+```
+
+---
+
+## Phase 3: DevOps and Deployment Flow
+
+### Security Best Practice (Keystore)
+When deploying contracts, managing private keys securely is paramount. It is a critical anti-pattern to paste private keys as plain text inside a `.env` file or directly into terminal commands. Instead, we use Foundry's keystore system combined with the `--account` flag.
+
+#### Step-by-Step Keystore Setup
+You have two safe options to configure a secure wallet with `cast`:
+
+**Option 1: Generate a brand new wallet directly into the keystore**
+Run this command to create a new random keypair and automatically encrypt it in the default Foundry keystore directory (`~/.foundry/keystores`):
+```bash
+cast wallet new ~/.foundry/keystores/<account_name>
+```
+You will be prompted to enter a password to encrypt the keystore file. 
+
+**Option 2: Import an existing private key interactively**
+If you already have a private key, securely import it without saving it to your bash history:
+```bash
+cast wallet import <account_name> --interactive
+```
+1. You will be prompted to paste your private key.
+2. Then, you will provide a password to encrypt it.
+
+#### Deploying with the Keystore
+In the `Makefile`, you can observe the use of `--account dummy` (where `dummy` is the placeholder for your `<account_name>`).
+When you run:
+```bash
+make deploy
+```
+Foundry will detect the `--account` flag and prompt you for your keystore password interactively. This completely eliminates plain-text private key exposure.
+
+### Deployment Scripts (Forge)
+Foundry utilizes Solidity itself for scripting deployments, which lives in the `script` directory. 
+- **`DeployProfileContract.s.sol` and `DeployProfileContractOp.s.sol`**: Both scripts inherit from Forge's `Script` contract.
+- **`vm.startBroadcast()` / `vm.stopBroadcast()`**: Everything between these two cheatcodes generates actual transactions that get broadcasted to the network.
+- **Environment Variables**: Variables like API URLs are safely pulled using `vm.envString("CORESCAN_TESTNET2")`.
+
+---
+
+### Best Practice: Leverage a Makefile
+
+A `Makefile` is a first-class DevOps tool and an essential part of a professional Foundry project. Alongside keystores, it is the second pillar of secure, repeatable deployments.
+
+---
+
+#### What is a Makefile?
+
+A `Makefile` is a plain text file (named exactly `Makefile`, no extension) that tells the `make` build-automation program how to assemble targets from rules. Each **target** is a named task, and each task contains one or more shell commands that `make` will execute.
+
+The core syntax is:
+
+```makefile
+target-name: [optional-dependencies]
+	shell command goes here
+	another shell command
+```
+
+> **Critical syntax rule**: The indentation before shell commands **must be a real tab character** (`\t`), not spaces. Most editors can be configured to insert tabs when working in Makefiles.
+
+`make` was originally designed to compile C programs, but its simple "name → commands" model makes it equally powerful as a task runner for Foundry projects—similar to how Node.js projects use `npm run` scripts.
+
+---
+
+#### Why Leverage a Makefile?
+
+| Problem without a Makefile | How a Makefile solves it |
+|---|---|
+| Forge deployment commands are long, multi-flag one-liners that are easy to mis-type | A short `make deploy` hides the complexity |
+| Every developer might use slightly different flags (wrong RPC URL, missing `--legacy`) | The Makefile is the single source of truth for every command |
+| Environment secrets need to be loaded before the command runs | `include .env` + `export` at the top of the Makefile auto-loads `.env` into every target |
+| Plain-text private keys in `.env` or terminal history | `--account <name>` delegates to the encrypted keystore; the Makefile never sees the key |
+| Forgetting to broadcast after a simulation | The `deploy` target always includes `--broadcast` by design |
+| Complex verification steps (parsing JSON, calling the verifier API) | Encapsulated once in the `verify` target and reused forever |
+
+In short: **a Makefile is reproducibility-as-code**. Anyone who clones the repo runs the exact same workflow with `make deploy`.
+
+---
+
+#### How to Write the Makefile — Step-by-Step
+
+Below is a full walkthrough of the `Makefile` in this project, built up piece by piece.
+
+---
+
+##### Step 1 — Load and Export Environment Variables
+
+```makefile
+include .env
+export
+```
+
+- `include .env` reads every `KEY=VALUE` line from `.env` into `make`'s variable namespace.
+- `export` re-exports all those variables to the shell environment so that every command spawned inside a target (e.g., `forge`, `jq`) can read them as normal `$VARIABLE` shell variables.
+
+Your `.env` should contain non-secret config only—RPC URLs, API endpoints, API keys for the block explorer:
+
+```
+TESTNET2_RPC_URL=https://rpc.testnet2.example.com
+TESTNET2_API_URL=https://api.testnet2.example.com
+CORESCAN_TESTNET2_API_KEY=abc123
+```
+
+> **Never put a raw private key in `.env`.** Add `.env` to `.gitignore` and use the keystore for signing.
+
+---
+
+##### Step 2 — Define Shared Variables
+
+```makefile
+CONTRACT_NAME := ProfileContractOp
+SCRIPT_NAME   := DeployProfileContractOp.s.sol
+SCRIPT_PATH   := script/$(SCRIPT_NAME):DeployProfileContractOp
+```
+
+- `:=` is the immediate-assignment operator in `make`—the value is expanded once at parse time, not every time the variable is used.
+- `$(VARIABLE)` is how you dereference a variable inside a Makefile.
+- `SCRIPT_PATH` uses the Forge convention `<file_path>:<contract_name>` to tell `forge script` which specific contract to run inside the script file.
+
+If you rename your contract or script in the future, you update exactly one line here and all targets stay correct.
+
+---
+
+##### Step 3 — Declare `.PHONY` Targets
+
+```makefile
+.PHONY: deploy verify tdeploy
+```
+
+By default, `make` checks whether a file with the target's name already exists. If it does, and the file is newer than its dependencies, `make` skips running the target. For pure task targets like `deploy` and `verify`, there will never be an output file, but `make` could still get confused if a file named `deploy` ever appeared in the directory. `.PHONY` explicitly tells `make` "this is always a command, never a file".
+
+---
+
+##### Step 4 — Write the `tdeploy` Target (Local Testnet)
+
+```makefile
+tdeploy:
+	forge script $(SCRIPT_PATH) \
+		--rpc-url http://127.0.0.1:8545 \
+		--account dummy \
+		--broadcast \
+		--legacy
+```
+
+- **`tdeploy`** stands for "test deploy". It targets the local Anvil chain (`127.0.0.1:8545`).
+- The backslash `\` at the end of each line is a line-continuation character—it tells the shell that the command continues on the next line. This keeps long commands readable.
+- `--account dummy` references the keystore entry named `dummy` (created with `cast wallet import dummy --interactive`). Foundry will prompt for the decryption password at runtime.
+- `--broadcast` submits the transactions; without this flag, `forge script` only simulates.
+- `--legacy` disables EIP-1559 transaction formatting, required for some EVM-compatible chains that don't support it.
+
+| Flag | Purpose |
+|---|---|
+| `--rpc-url` | Which node to send transactions to |
+| `--account` | Encrypted keystore name (no plain-text key) |
+| `--broadcast` | Actually send transactions (default is simulation-only) |
+| `--legacy` | Use pre-EIP1559 gas model |
+
+---
+
+##### Step 5 — Write the `deploy` Target (Live Testnet)
+
+```makefile
+deploy:
+	forge script $(SCRIPT_PATH) \
+		--rpc-url $(TESTNET2_RPC_URL) \
+		--account dummy \
+		--broadcast \
+		--legacy
+```
+
+Identical to `tdeploy` except `--rpc-url` now reads `$(TESTNET2_RPC_URL)` from `.env` instead of being hardcoded. This is the single change that distinguishes a local deploy from a live one—everything else is identical.
+
+---
+
+##### Step 6 — Write the `verify` Target
+
+This is the most sophisticated target. Verification submits your contract's Solidity source code to a block explorer so users can read and audit it on-chain.
+
+```makefile
+verify:
+	$(eval BROADCAST_FILE := $(shell find broadcast/$(SCRIPT_NAME) -name run-latest.json | head -n 1))
+	$(eval CONTRACT := $(shell jq -r '.transactions[] | select(.contractName == "$(CONTRACT_NAME)") | .contractAddress' $(BROADCAST_FILE)))
+	@echo "Broadcast file: $(BROADCAST_FILE)"
+	@echo "Verifying $(CONTRACT_NAME) at $(CONTRACT)"
+	forge verify-contract $(CONTRACT) $(CONTRACT_NAME) \
+		--verifier-url $(TESTNET2_API_URL) \
+		--api-key $(CORESCAN_TESTNET2_API_KEY) \
+		--watch
+```
+
+Let's break down each line:
+
+**Line 1 — `$(eval BROADCAST_FILE := ...)`**
+`forge script --broadcast` writes a JSON receipt of every transaction to `broadcast/<ScriptName>/<chainId>/run-latest.json`. The `$(shell ...)` function runs a shell command during `make` evaluation and returns its output as a string. Here `find` locates that JSON file automatically regardless of the chain ID directory name.
+
+**Line 2 — `$(eval CONTRACT := ...)`**
+`jq` is a command-line JSON processor. This command queries the broadcast JSON for the transaction whose `contractName` matches `$(CONTRACT_NAME)` and extracts its deployed `contractAddress`. This means you never need to copy-paste the deployed address manually.
+
+**Lines 3–4 — `@echo ...`**
+The `@` prefix suppresses `make` echoing the command itself before running it—only the output is shown. This keeps the terminal output clean.
+
+**Lines 5–8 — `forge verify-contract`**
+Sends the source, compiler settings, and ABI to the block explorer API. `--watch` polls the explorer until verification succeeds (or fails), printing the result.
+
+---
+
+##### Step 7 (Optional) — Add a `setup-wallet` Target
+
+```makefile
+setup-wallet:
+	@echo "Creating a new encrypted keystore wallet..."
+	cast wallet new ~/.foundry/keystores/dummy
+	@echo "Wallet saved. Use 'make deploy' to deploy with it."
+```
+
+Running `make setup-wallet` creates a new random keypair, encrypts it with a password you provide interactively, and saves it to the Foundry keystore directory under the name `dummy`. This is a one-time setup step for any new developer joining the project.
+
+---
+
+#### Visual Target Dependency Diagram
+
+```
+[.env] ──────────────────────────────────────────────────┐
+                                                          │  (loaded by include .env)
+[Makefile variables]                                      ▼
+  CONTRACT_NAME ─────────────────────────────────── verify
+  SCRIPT_NAME   ─────────────────────────────────── verify
+  SCRIPT_PATH   ─────┬─────── tdeploy              deploy
+                     └─────── deploy
+                                  │
+                          forge script ...
+                                  │
+                       broadcast/run-latest.json
+                                  │
+                               verify
+                                  │
+                        forge verify-contract ...
+```
+
+---
+
+#### How to Use the Makefile
+
+After completing the keystore setup (see Keystore section above), all operations reduce to a single short command.
+
+**First-time setup (one-time per machine)**
+```bash
+make setup-wallet   # creates the encrypted 'dummy' keystore
+```
+
+**Deploy to local Anvil (development)**
+```bash
+make tdeploy        # targets http://127.0.0.1:8545
+```
+
+**Deploy to live testnet**
+```bash
+make deploy         # uses TESTNET2_RPC_URL from .env
+```
+
+**Verify on block explorer**
+```bash
+make verify         # auto-reads deployed address from broadcast JSON
+```
+
+**Chain deploy + verify in one line**
+```bash
+make deploy && make verify
+```
+
+---
+
+#### Makefile Best-Practice Checklist
+
+- [ ] `include .env` and `export` at the top so all targets see your config.
+- [ ] Add `.env` to `.gitignore`—never commit secrets to version control.
+- [ ] Use `--account <name>` (keystore) instead of `--private-key $PRIVATE_KEY`.
+- [ ] Declare all task targets in `.PHONY` to avoid file-name conflicts.
+- [ ] Use `:=` variables for reusable values (contract name, script path).
+- [ ] Use line continuations (`\`) to keep long Forge commands readable.
+- [ ] Prefix informational `echo` lines with `@` to suppress command noise.
+- [ ] Pin your Foundry version in `foundry.toml` (`solc = "0.8.28"`) so the Makefile produces the same bytecode on every machine.
+- [ ] Provide a `help` target (optional) that prints available commands:
+  ```makefile
+  help:
+  	@echo "Available targets:"
+  	@echo "  setup-wallet  Create an encrypted keystore wallet"
+  	@echo "  tdeploy       Deploy to local Anvil"
+  	@echo "  deploy        Deploy to live testnet"
+  	@echo "  verify        Verify contract on block explorer"
+  ```
+
