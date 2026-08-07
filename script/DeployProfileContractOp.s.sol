@@ -17,7 +17,7 @@ contract DeployProfileContractOp is Script {
 
         console.log(
             string.concat(
-                "Optimized Profile Contract is deployed to: ", explorerUrl, toString(vm.address(profileContractOp))
+                "Optimized Profile Contract is deployed to: ", explorerUrl, vm.toString(address(profileContractOp))
             )
         );
     }
