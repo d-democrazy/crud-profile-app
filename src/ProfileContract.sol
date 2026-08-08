@@ -100,7 +100,6 @@ contract ProfileContract {
         Profile[] memory profilesCopy = new Profile[](totalProfiles);
 
         for (uint256 i; i < totalProfiles; i++) {
-            profileOwnersCopy[i] = profileOwners[i];
             profilesCopy[i] = profiles[profileOwners[i]];
         }
 

@@ -94,7 +94,7 @@ contract ProfileContractOp is IProfileContractOp, ValidationHelper, CompareHelpe
         return (owners, allProfiles);
     }
 
-    function deleteProfile() external returns (bool) {
+    function deleteProfile() external {
         if (!profiles[msg.sender].exists) {
             revert ProfileNotFound();
         }
@@ -102,6 +102,5 @@ contract ProfileContractOp is IProfileContractOp, ValidationHelper, CompareHelpe
         profileOwners.remove(msg.sender);
 
         emit ProfileCleared(msg.sender);
-        return true;
     }
 }

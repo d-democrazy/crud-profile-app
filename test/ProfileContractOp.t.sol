@@ -129,8 +129,7 @@ contract ProfileContractOpTest is Test {
         vm.stopPrank();
 
         vm.startPrank(alice);
-        bool deleted = profileContractOp.deleteProfile();
-        assertTrue(deleted);
+        profileContractOp.deleteProfile();
         vm.stopPrank();
 
         vm.startPrank(attacker);

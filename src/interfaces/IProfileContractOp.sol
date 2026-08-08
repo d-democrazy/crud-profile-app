@@ -35,7 +35,7 @@ interface IProfileContractOp {
 
     function updateProfile(ProfileTypes.ProfileInput calldata input) external;
 
-    function deleteProfile() external returns (bool);
+    function deleteProfile() external;
 
     function getProfile(address profileOwner) external view returns (ProfileTypes.Profile memory);
 
