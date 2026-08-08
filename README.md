@@ -1531,7 +1531,8 @@ If you rename your contract or script in the future, you update exactly one line
 ##### Step 3 — Declare `.PHONY` Targets
 
 ```makefile
-.PHONY: deploy verify tdeploy
+.PHONY: deploy verify tdeploy tcall call tsend send \
+        get-profile get-all-profile set-profile update-profile delete-profile
 ```
 
 By default, `make` checks whether a file with the target's name already exists. If it does, and the file is newer than its dependencies, `make` skips running the target. For pure task targets like `deploy` and `verify`, there will never be an output file, but `make` could still get confused if a file named `deploy` ever appeared in the directory. `.PHONY` explicitly tells `make` "this is always a command, never a file".
@@ -1624,6 +1625,106 @@ Running `make setup-wallet` creates a new random keypair, encrypts it with a pas
 
 ---
 
+##### Step 8 — Write `call`/`send` Targets (Interact with the Deployed Contract)
+
+Deploying and verifying is only half the workflow — you also need a fast way to read state from and write transactions to the contract once it's live. Foundry's `cast` CLI does both: `cast call` simulates a function locally and returns the result without spending gas or creating a transaction (read-only), while `cast send` actually broadcasts a signed transaction (state-changing, costs gas).
+
+Rather than exposing raw `cast` signatures on the command line, `tcall`/`call`/`tsend`/`send` take a **friendly action name** as a second word (`get-profile`, `set-profile`, etc.) and translate it internally — so day-to-day usage never touches Solidity function signatures or a contract address:
+
+```makefile
+# The friendly action name arrives as the Makefile's *second* command-line word
+ACTION := $(word 2,$(MAKECMDGOALS))
+
+# Auto-resolve the deployed address from the broadcast JSON, same lookup `verify` uses (Step 6)
+define resolve_address
+$(eval BROADCAST_FILE := $(shell find broadcast/$(SCRIPT_NAME)/$(1) -name run-latest.json | head -n 1))
+$(eval CONTRACT_ADDRESS := $(shell jq -r '.transactions[] | select(.contractName == "$(CONTRACT_NAME)") | .contractAddress' $(BROADCAST_FILE)))
+endef
+
+# Swallow the action word itself so `make tcall get-profile` doesn't
+# also try (and fail) to build a target literally named `get-profile`
+get-profile get-all-profile set-profile update-profile delete-profile:
+	@:
+
+tcall:
+	$(call resolve_address,31337)
+	@case "$(ACTION)" in \
+		get-profile)     cast call $(CONTRACT_ADDRESS) "getProfile(address)" $(or $(ADDRESS),$(shell cast wallet address --account dummy)) --rpc-url http://127.0.0.1:8545 ;; \
+		get-all-profile) cast call $(CONTRACT_ADDRESS) "getAllProfiles()" --rpc-url http://127.0.0.1:8545 ;; \
+		*) echo "make tcall: unknown action '$(ACTION)' (use get-profile | get-all-profile)"; exit 1 ;; \
+	esac
+
+call:
+	$(call resolve_address,$(TESTNET2_CHAIN_ID))
+	@case "$(ACTION)" in \
+		get-profile)     cast call $(CONTRACT_ADDRESS) "getProfile(address)" $(or $(ADDRESS),$(shell cast wallet address --account dummy)) --rpc-url $(TESTNET2_RPC_URL) ;; \
+		get-all-profile) cast call $(CONTRACT_ADDRESS) "getAllProfiles()" --rpc-url $(TESTNET2_RPC_URL) ;; \
+		*) echo "make call: unknown action '$(ACTION)' (use get-profile | get-all-profile)"; exit 1 ;; \
+	esac
+
+tsend:
+	$(call resolve_address,31337)
+	@case "$(ACTION)" in \
+		set-profile)     cast send $(CONTRACT_ADDRESS) "setProfile((string,string,string,uint8))" $(ARGS) --rpc-url http://127.0.0.1:8545 --account dummy --legacy ;; \
+		update-profile)  cast send $(CONTRACT_ADDRESS) "updateProfile((string,string,string,uint8))" $(ARGS) --rpc-url http://127.0.0.1:8545 --account dummy --legacy ;; \
+		delete-profile)  cast send $(CONTRACT_ADDRESS) "deleteProfile()" --rpc-url http://127.0.0.1:8545 --account dummy --legacy ;; \
+		*) echo "make tsend: unknown action '$(ACTION)' (use set-profile | update-profile | delete-profile)"; exit 1 ;; \
+	esac
+
+send:
+	$(call resolve_address,$(TESTNET2_CHAIN_ID))
+	@case "$(ACTION)" in \
+		set-profile)     cast send $(CONTRACT_ADDRESS) "setProfile((string,string,string,uint8))" $(ARGS) --rpc-url $(TESTNET2_RPC_URL) --account dummy --legacy ;; \
+		update-profile)  cast send $(CONTRACT_ADDRESS) "updateProfile((string,string,string,uint8))" $(ARGS) --rpc-url $(TESTNET2_RPC_URL) --account dummy --legacy ;; \
+		delete-profile)  cast send $(CONTRACT_ADDRESS) "deleteProfile()" --rpc-url $(TESTNET2_RPC_URL) --account dummy --legacy ;; \
+		*) echo "make send: unknown action '$(ACTION)' (use set-profile | update-profile | delete-profile)"; exit 1 ;; \
+	esac
+```
+
+- **`ACTION := $(word 2,$(MAKECMDGOALS))`** reads the second word off the raw command line. `make tcall get-profile` sets `MAKECMDGOALS` to `tcall get-profile`, so `$(word 2,...)` is `get-profile`.
+- **The no-op catch-all** (`get-profile get-all-profile ... : @:`) exists purely to stop `make` from erroring — without it, `make` treats `get-profile` as _its own_ goal to build and fails with `No rule to make target 'get-profile'`, since `make` always tries to build every word on the command line as a target.
+- **`resolve_address`** is a reusable `define` block (Make's version of a function) that reruns the exact same `find` + `jq` broadcast lookup the `verify` target uses (Step 6), so the contract address is never typed by hand. It's parameterized on chain ID because Foundry writes broadcast receipts to `broadcast/<Script>/<chainId>/run-latest.json` — Anvil's default chain ID is `31337`; the live testnet's chain ID needs its own `.env` entry:
+  ```
+  TESTNET2_CHAIN_ID=<your testnet's chain id>
+  ```
+- **`getProfile(address)`** needs an address argument even though the CLI examples below don't pass one — it defaults to your own keystore address via `$(or $(ADDRESS),$(shell cast wallet address --account dummy))`. Query someone else's profile with `make tcall get-profile ADDRESS=0x...`.
+- **`(string,string,string,uint8)`** wrapped in an outer `(...)` is the tuple encoding `cast` expects for the optimized contract's `ProfileTypes.ProfileInput` struct — `setProfile`/`updateProfile` each take one struct argument, not four separate ones. `$(ARGS)` must be a single quoted, parenthesized tuple, not four comma-separated strings on their own — see the examples below.
+- `tsend`/`send` reuse `--account dummy --legacy`, same as `tdeploy`/`deploy`, so writes are signed from the encrypted keystore rather than a plain-text key. `delete-profile` needs no `$(ARGS)` at all.
+
+| Command                                  | Reads/writes                                         | Network      |
+| ---------------------------------------- | ---------------------------------------------------- | ------------ |
+| `make tcall get-profile`                 | `getProfile(address)` (defaults to your own address) | Local Anvil  |
+| `make tcall get-all-profile`             | `getAllProfiles()`                                   | Local Anvil  |
+| `make call get-profile`                  | `getProfile(address)`                                | Live testnet |
+| `make call get-all-profile`              | `getAllProfiles()`                                   | Live testnet |
+| `make tsend set-profile ARGS='(...)'`    | `setProfile((string,string,string,uint8))`           | Local Anvil  |
+| `make tsend update-profile ARGS='(...)'` | `updateProfile((string,string,string,uint8))`        | Local Anvil  |
+| `make tsend delete-profile`              | `deleteProfile()`                                    | Local Anvil  |
+| `make send set-profile ARGS='(...)'`     | `setProfile((string,string,string,uint8))`           | Live testnet |
+| `make send update-profile ARGS='(...)'`  | `updateProfile((string,string,string,uint8))`        | Live testnet |
+| `make send delete-profile`               | `deleteProfile()`                                    | Live testnet |
+
+**Example usage**
+
+```bash
+# Read your own profile from local Anvil
+make tcall get-profile
+
+# Read every profile ever set, from live testnet
+make call get-all-profile
+
+# Create a profile on local Anvil
+make tsend set-profile ARGS='("Jhon Doe","Software Engineer","Builds things",5)'
+
+# Patch one field on live testnet (see the Partial-patch sentinel convention, above)
+make send update-profile ARGS='("","Senior Engineer","",0)'
+
+# Remove your profile on live testnet
+make send delete-profile
+```
+
+---
+
 #### Visual Target Dependency Diagram
 
 ```
@@ -1678,6 +1779,26 @@ make verify         # auto-reads deployed address from broadcast JSON
 
 ```bash
 make deploy && make verify
+```
+
+**Read from the deployed contract (no gas)**
+
+```bash
+make tcall get-profile          # your own profile, local Anvil
+make tcall get-all-profile      # every profile, local Anvil
+make call get-profile           # your own profile, live testnet
+make call get-all-profile       # every profile, live testnet
+```
+
+**Write to the deployed contract (costs gas)**
+
+```bash
+make tsend set-profile ARGS='("Name","Role","Bio",5)'      # local Anvil
+make tsend update-profile ARGS='("","Role only","",0)'    # local Anvil
+make tsend delete-profile                                  # local Anvil
+make send set-profile ARGS='("Name","Role","Bio",5)'       # live testnet
+make send update-profile ARGS='("","Role only","",0)'      # live testnet
+make send delete-profile                                   # live testnet
 ```
 
 ---
